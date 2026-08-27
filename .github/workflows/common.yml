@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      test-command:
+        description: 'Test command(s) which should be used to test a package'
+        default: 'nimble test'
+        required: false
+        type: string
+      nim-versions:
+        description: 'List of Nim versions which should be used for testing'
+        default: '["version-2-0", "version-2-2", "devel"]'
+        required: false
+        type: string
+      nimble-version:
+        description: 'NIMBLE_COMMIT to use when compiling nimble, defaults to the one shipped with nim'
+        default: ''
+        required: false
+        type: string
+      nimble-bin-path:
+        description: 'Add .nimble/bin path to GITHUB_PATH'
+        required: false
+        default: false
+        type: boolean
+
+concurrency: # Cancel stale PR builds (but not push builds)
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    env:
+      NIMBLE_COMMIT: ${{ inputs.nimble-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: linux
+            cpu: amd64
+            platform: x64
+            builder: ubuntu-latest
+          - os: linux-gcc-14 # This is to use ubuntu 24 and install gcc 14. Should be removed when ubuntu-latest is 26.04
+            cpu: amd64
+            platform: x64
+            builder: ubuntu-24.04
+          - os: linux
+            cpu: arm64
+            platform: arm64
+            builder: ubuntu-24.04-arm
+        branch: ${{ fromJson(inputs.nim-versions) }}
+    defaults:
+      run:
+        shell: bash
+
+    name: '${{ matrix.target.os }}-${{ matrix.target.cpu }} (Nim ${{ matrix.branch }})'
+    runs-on: ${{ matrix.target.builder }}
+    continue-on-error: ${{ matrix.branch == 'devel' }}
+
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Use gcc 14
+        # Should be removed when ubuntu-latest is 26.04
+        if: ${{ matrix.target.os == 'linux-gcc-14' }}
+        run: |
+          # Add GCC-14 to alternatives
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 14
+          # Set GCC-14 as the default
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+
+      - name: Get Nim commit hash
+        id: nim-hash
+        run: |
+          BRANCH="${{ matrix.branch }}"
+          HASH=$(curl -s "https://api.github.com/repos/nim-lang/Nim/branches/${{ matrix.branch }}" | jq -r .commit.sha)
+          echo "NIM_COMMIT_HASH=$HASH" >> $GITHUB_ENV
+          echo "nim_commit_hash=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Restore Nim build from cache
+        id: nim-cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            nim/bin
+            nim/config
+            nim/lib
+            nim/nim.nimble
+          key: nim-${{ matrix.branch }}-${{ steps.nim-hash.outputs.nim_commit_hash }}-${{ matrix.target.os }}-${{ matrix.target.cpu }}
+
+      - name: Build Nim and Nimble
+        if: steps.nim-cache.outputs.cache-hit != 'true'
+        env:
+          MAKE: make -j4
+          ARCH_OVERRIDE: ${{ matrix.target.platform }}
+          NIM_COMMIT: ${{ matrix.branch }}
+          QUICK_AND_DIRTY_COMPILER: 1
+          QUICK_AND_DIRTY_NIMBLE: 1
+          CC: gcc
+        run: |
+          curl -O -L -s -S https://raw.githubusercontent.com/status-im/nimbus-build-system/master/scripts/build_nim.sh
+          bash build_nim.sh nim csources dist/nimble NimBinaries
+
+      - name: Save Nim build to cache
+        if: steps.nim-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            nim/bin
+            nim/config
+            nim/lib
+            nim/nim.nimble
+          key: nim-${{ matrix.branch }}-${{ steps.nim-hash.outputs.nim_commit_hash }}-${{ matrix.target.os }}-${{ matrix.target.cpu }}
+
+      - name: Add Nim bin to GITHUB_PATH
+        run: echo '${{ github.workspace }}/nim/bin' >> $GITHUB_PATH
+
+      - name: Add .nimble/bin path to GITHUB_PATH
+        if: ${{ inputs.nimble-bin-path }}
+        run: echo '/home/runner/.nimble/bin' >> $GITHUB_PATH
+
+      - name: Run tests
+        env:
+          PLATFORM: ${{ matrix.target.platform }}
+        run: |
+          nim --version
+          nimble --version
+          gcc --version
+          nimble install -y --depsOnly
+          ${{ inputs.test-command }}
