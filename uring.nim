@@ -239,13 +239,6 @@ type
     cmsg_level*: int32
     cmsg_type*: int32
 
-  EpollEvent* {.bycopy, packed.} = object
-    # The kernel packs epoll_event on x86_64; on other Linux targets the
-    # layout is identical with or without packing (u32 + padding-free u64
-    # data union), so packing unconditionally matches the C layout.
-    events*: uint32
-    data*: uint64
-
   FutexWaitv* {.bycopy.} = object
     val*: uint64
     uaddr*: uint64
@@ -289,6 +282,17 @@ type
     stx_atomic_write_unit_max_opt*: uint32
     spare2: array[1, uint32]
     spare3: array[8, uint64]
+
+# The kernel packs epoll_event on x86_64 only; elsewhere the u64 data member
+# is naturally aligned to offset 8 (16 bytes total, vs 12 packed).
+when defined(amd64):
+  type EpollEvent* {.bycopy, packed.} = object
+    events*: uint32
+    data*: uint64
+else:
+  type EpollEvent* {.bycopy.} = object
+    events*: uint32
+    data*: uint64
 
 include uring_generated
 

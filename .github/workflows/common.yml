@@ -83,7 +83,7 @@ jobs:
 
       - name: Restore Nim build from cache
         id: nim-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             nim/bin
@@ -107,7 +107,7 @@ jobs:
 
       - name: Save Nim build to cache
         if: steps.nim-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             nim/bin

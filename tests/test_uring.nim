@@ -27,10 +27,14 @@ suite "ABI":
       sizeof(IoUringProbe) == cProbeSize()
       sizeof(EpollEvent) == cEpollEventSize()
       sizeof(Cmsghdr) == cCmsghdrSize()
-      sizeof(FutexWaitv) == cFutexWaitvSize()
       sizeof(Statx) == cStatxSize()
       offsetOf(Statx, stx_mtime) == cStatxOffMtime()
-      offsetOf(Statx, stx_subvol) == cStatxOffSubvol()
+    # Skipped when the build system's kernel headers predate the field
+    # (cLayoutIf returns -1 there); the uapi reserves the space either way.
+    if cFutexWaitvSize() >= 0:
+      check sizeof(FutexWaitv) == cFutexWaitvSize()
+    if cStatxOffSubvol() >= 0:
+      check offsetOf(Statx, stx_subvol) == cStatxOffSubvol()
 
   test "constants match the C header":
     check:

@@ -45,6 +45,16 @@ template cLayout(name: untyped, expr: static string) =
     {.emit: [v, " = (long)(", expr, ");"].}
     v.int
 
+template cLayoutIf(name: untyped, guard: static string, expr: static string) =
+  ## Like `cLayout`, but returns -1 when the C headers on the build system
+  ## are too old to define the guard macro (and thus the checked member);
+  ## the corresponding test is skipped then. The wrapper's hand-maintained
+  ## layouts follow the kernel uapi, which reserves the space regardless.
+  proc name*(): int =
+    var v: clong = -1
+    {.emit: ["\n#ifdef ", guard, "\n", v, " = (long)(", expr, ");\n#endif\n"].}
+    v.int
+
 cLayout(cSqeSize, "sizeof(struct io_uring_sqe)")
 cLayout(cSqeOffAddr, "offsetof(struct io_uring_sqe, addr)")
 cLayout(cSqeOffLen, "offsetof(struct io_uring_sqe, len)")
@@ -58,7 +68,8 @@ cLayout(cParamsSize, "sizeof(struct io_uring_params)")
 cLayout(cProbeSize, "sizeof(struct io_uring_probe)")
 cLayout(cEpollEventSize, "sizeof(struct epoll_event)")
 cLayout(cCmsghdrSize, "sizeof(struct cmsghdr)")
-cLayout(cFutexWaitvSize, "sizeof(struct futex_waitv)")
+# futex_waitv needs kernel headers >= 5.16, stx_subvol >= 6.10.
+cLayoutIf(cFutexWaitvSize, "FUTEX_WAITV_MAX", "sizeof(struct futex_waitv)")
 cLayout(cStatxSize, "sizeof(struct statx)")
 cLayout(cStatxOffMtime, "offsetof(struct statx, stx_mtime)")
-cLayout(cStatxOffSubvol, "offsetof(struct statx, stx_subvol)")
+cLayoutIf(cStatxOffSubvol, "STATX_SUBVOL", "offsetof(struct statx, stx_subvol)")
