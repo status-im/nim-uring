@@ -73,3 +73,24 @@ cLayoutIf(cFutexWaitvSize, "FUTEX_WAITV_MAX", "sizeof(struct futex_waitv)")
 cLayout(cStatxSize, "sizeof(struct statx)")
 cLayout(cStatxOffMtime, "offsetof(struct statx, stx_mtime)")
 cLayoutIf(cStatxOffSubvol, "STATX_SUBVOL", "offsetof(struct statx, stx_subvol)")
+
+# Offsets and sizes for the struct-typed fields whose C names opir drops and
+# `restoreNamedStructFields` in scripts/gen_wrapper.nim puts back. That
+# repair depends on how libclang reports the header, so it has to be
+# re-checked after every regeneration.
+cLayout(cRingOffSq, "offsetof(struct io_uring, sq)")
+cLayout(cRingOffCq, "offsetof(struct io_uring, cq)")
+cLayout(cParamsOffSqOff, "offsetof(struct io_uring_params, sq_off)")
+cLayout(cParamsOffCqOff, "offsetof(struct io_uring_params, cq_off)")
+cLayout(cRegWaitOffTs, "offsetof(struct io_uring_reg_wait, ts)")
+cLayout(cSyncCancelOffTimeout,
+  "offsetof(struct io_uring_sync_cancel_reg, timeout)")
+cLayout(cZcrxIfqRegOffOffsets,
+  "offsetof(struct io_uring_zcrx_ifq_reg, offsets)")
+cLayout(cZcrxCtrlOffExport, "offsetof(struct zcrx_ctrl, zc_export)")
+cLayout(cZcrxCtrlOffFlush, "offsetof(struct zcrx_ctrl, zc_flush)")
+cLayout(cBpfOffFilter, "offsetof(struct io_uring_bpf, filter)")
+cLayout(cSqRingSize, "sizeof(struct io_uring_sq)")
+cLayout(cCqRingSize, "sizeof(struct io_uring_cq)")
+cLayout(cSqOffsetsSize, "sizeof(struct io_sqring_offsets)")
+cLayout(cCqOffsetsSize, "sizeof(struct io_cqring_offsets)")

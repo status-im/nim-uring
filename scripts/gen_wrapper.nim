@@ -11,6 +11,7 @@
 # resulting binary does nothing.
 
 import futhark
+import std/json
 from std/os import parentDir, `/`
 from std/strutils import strip, startsWith, endsWith, toUpperAscii
 
@@ -56,11 +57,78 @@ proc renameType(name: string, kind: SymbolKind, partof: string,
   if styled.len > 0:
     result = styled
 
+type OpirCallback = proc(node: JsonNode): JsonNode
+  ## Futhark takes its opir callbacks as closures; a plain top-level `proc`
+  ## has the `nimcall` convention and needs converting to this type.
+
+proc unwrapNamedStructField(field: JsonNode): JsonNode =
+  ## Repairs a single field entry that lost its C name, or returns `nil` if
+  ## the entry is fine as it is.
+  ##
+  ## libclang 20 and newer report a field declared as `struct io_uring_sq sq`
+  ## as `CXType_Record` where older releases reported `CXType_Elaborated`.
+  ## Futhark's `opir` takes the former to mean an inline anonymous struct
+  ## definition, so the field loses its name and gains a wrapper struct
+  ## around it: `ring->sq` ends up as `ring.anon0.anon0` instead of
+  ## `ring.sq`. The name survives as the wrapper's own name (`struct_sq`),
+  ## so the entry can be folded back into a plain named field.
+  ##
+  ## Only that exact shape is rewritten — an unnamed entry wrapping a single
+  ## unnamed member, where the wrapper itself carries a name. Genuine
+  ## anonymous struct and union members produce a nameless wrapper and are
+  ## left for Futhark to handle as `anonN`.
+  if field.kind != JObject or not field.hasKey("type"): return nil
+  if field.hasKey("name") and field["name"].getStr.len != 0: return nil
+  let wrapper = field["type"]
+  if wrapper.kind != JObject or not wrapper.hasKey("kind") or
+      not wrapper.hasKey("name") or not wrapper.hasKey("fields"):
+    return nil
+  if wrapper["kind"].getStr notin ["struct", "union"]: return nil
+  let members = wrapper["fields"]
+  if members.kind != JArray or members.len != 1: return nil
+  let member = members[0]
+  if member.kind != JObject or not member.hasKey("type"): return nil
+  if member.hasKey("name") and member["name"].getStr.len != 0: return nil
+  var name = wrapper["name"].getStr
+  for prefix in ["struct_", "union_"]:
+    if name.startsWith(prefix):
+      name = name[prefix.len .. ^1]
+      break
+  if name.len == 0: return nil
+  result = newJObject()
+  result["name"] = newJString(name)
+  result["type"] = member["type"]
+
+proc restoreNamedStructFields(node: JsonNode): JsonNode =
+  ## Applies `unwrapNamedStructField` to every field list in opir's output,
+  ## including the ones nested inside anonymous unions.
+  if node != nil:
+    case node.kind
+    of JArray:
+      for i in 0 ..< node.elems.len:
+        discard restoreNamedStructFields(node.elems[i])
+    of JObject:
+      if node.hasKey("fields") and node["fields"].kind == JArray:
+        let fields = node["fields"]
+        for i in 0 ..< fields.elems.len:
+          let fixed = unwrapNamedStructField(fields.elems[i])
+          if fixed != nil:
+            fields.elems[i] = fixed
+      for _, value in node.pairs:
+        discard restoreNamedStructFields(value)
+    else: discard
+  node
+
 importc:
   outputPath repoRoot / "uring_generated.nim"
   renameCallback renameType
+  addOpirCallback OpirCallback(restoreNamedStructFields)
+  # Only the Clang resource directory is passed explicitly. The libc headers
+  # are left to Clang's own search list rather than a hardcoded
+  # `/usr/include`, which is not where every distribution keeps them
+  # (Debian and Ubuntu use a multiarch directory such as
+  # `/usr/include/x86_64-linux-gnu`).
   sysPath clangResourceInclude
-  sysPath "/usr/include"
   path uringInclude
   define "_GNU_SOURCE"
   # Define IOURINGINLINE to nothing so liburing's static-inline helpers are

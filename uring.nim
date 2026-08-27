@@ -294,7 +294,15 @@ else:
     events*: uint32
     data*: uint64
 
+# The generated bindings warn that the hand-maintained types above have a
+# different size than the ones Futhark derived from the header. That is the
+# point of overriding them — Futhark turns flexible array members into an
+# extra pointer field and forward-declared types into empty objects — so the
+# warnings are expected and would otherwise be printed in every downstream
+# build. The layouts are validated against the C compiler in the test suite.
+{.push warning[User]: off.}
 include uring_generated
+{.pop.}
 
 func big_cqe*(cqe: ptr IoUringCqe): ptr UncheckedArray[uint64] =
   ## The extra completion data following the CQE on rings set up with

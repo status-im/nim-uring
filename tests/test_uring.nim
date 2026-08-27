@@ -36,6 +36,36 @@ suite "ABI":
     if cStatxOffSubvol() >= 0:
       check offsetOf(Statx, stx_subvol) == cStatxOffSubvol()
 
+  test "struct-typed fields keep their C names and offsets":
+    # opir drops the name of a field whose type is another named struct;
+    # `restoreNamedStructFields` in scripts/gen_wrapper.nim puts it back.
+    # Without that repair these come out as positional `anon0`/`anon1`
+    # wrappers, so check that each field is present and where C puts it.
+    #
+    # `offsetOf` takes a single field name, so the three members that sit
+    # inside a genuine anonymous union are measured from the object address.
+    template fieldOff(base, field: untyped): int =
+      int(cast[uint](addr field) - cast[uint](addr base))
+
+    var
+      ctrl: ZcrxCtrl
+      bpf: IoUringBpf
+    check:
+      fieldOff(ctrl, ctrl.anon0.zc_export) == cZcrxCtrlOffExport()
+      fieldOff(ctrl, ctrl.anon0.zc_flush) == cZcrxCtrlOffFlush()
+      fieldOff(bpf, bpf.anon0.filter) == cBpfOffFilter()
+      offsetOf(IoUring, sq) == cRingOffSq()
+      offsetOf(IoUring, cq) == cRingOffCq()
+      offsetOf(IoUringParams, sq_off) == cParamsOffSqOff()
+      offsetOf(IoUringParams, cq_off) == cParamsOffCqOff()
+      offsetOf(IoUringRegWait, ts) == cRegWaitOffTs()
+      offsetOf(IoUringSyncCancelReg, timeout) == cSyncCancelOffTimeout()
+      offsetOf(IoUringZcrxIfqReg, offsets) == cZcrxIfqRegOffOffsets()
+      sizeof(IoUringSq) == cSqRingSize()
+      sizeof(IoUringCq) == cCqRingSize()
+      sizeof(IoSqringOffsets) == cSqOffsetsSize()
+      sizeof(IoCqringOffsets) == cCqOffsetsSize()
+
   test "constants match the C header":
     check:
       IORING_SETUP_SQPOLL == hdrSetupSqpoll
