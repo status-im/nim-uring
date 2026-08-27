@@ -9,31 +9,37 @@ import std/os
 import std/posix
 import unittest2
 import ../uring
-
-# Constant cross-checks read the C values through the header; importc
-# variables must live at module scope.
-var
-  cSetupSqpoll {.importc: "IORING_SETUP_SQPOLL", header: uringHeader.}: culonglong
-  cSetupSqRewind {.importc: "IORING_SETUP_SQ_REWIND", header: uringHeader.}: culonglong
-  cSqeIoLink {.importc: "IOSQE_IO_LINK", header: uringHeader.}: culonglong
-  cEnterGetevents {.importc: "IORING_ENTER_GETEVENTS", header: uringHeader.}: culonglong
-  cFeatNoIowait {.importc: "IORING_FEAT_NO_IOWAIT", header: uringHeader.}: culonglong
-  cCqeF32 {.importc: "IORING_CQE_F_32", header: uringHeader.}: culonglong
+import ./cconsts
 
 suite "ABI":
-  test "type sizes match the C header":
+  test "type layouts match the C header":
     check:
-      sizeof(IoUringSqe) == 64
-      sizeof(IoUringCqe) == 16
+      sizeof(IoUringSqe) == cSqeSize()
+      offsetOf(IoUringSqe, addr_u) == cSqeOffAddr()
+      offsetOf(IoUringSqe, len) == cSqeOffLen()
+      offsetOf(IoUringSqe, user_data) == cSqeOffUserData()
+      offsetOf(IoUringSqe, personality) == cSqeOffPersonality()
+      offsetOf(IoUringSqe, cmd_u) == cSqeOffAddr3()
+      sizeof(IoUringCqe) == cCqeSize()
+      offsetOf(IoUringCqe, res) == cCqeOffRes()
+      sizeof(IoUring) == cRingSize()
+      sizeof(IoUringParams) == cParamsSize()
+      sizeof(IoUringProbe) == cProbeSize()
+      sizeof(EpollEvent) == cEpollEventSize()
+      sizeof(Cmsghdr) == cCmsghdrSize()
+      sizeof(FutexWaitv) == cFutexWaitvSize()
+      sizeof(Statx) == cStatxSize()
+      offsetOf(Statx, stx_mtime) == cStatxOffMtime()
+      offsetOf(Statx, stx_subvol) == cStatxOffSubvol()
 
   test "constants match the C header":
     check:
-      IORING_SETUP_SQPOLL == cSetupSqpoll.uint32
-      IORING_SETUP_SQ_REWIND == cSetupSqRewind.uint32
-      IOSQE_IO_LINK == cSqeIoLink.uint8
-      IORING_ENTER_GETEVENTS == cEnterGetevents.uint32
-      IORING_FEAT_NO_IOWAIT == cFeatNoIowait.uint32
-      IORING_CQE_F_32 == cCqeF32.uint32
+      IORING_SETUP_SQPOLL == hdrSetupSqpoll
+      IORING_SETUP_SQ_REWIND == hdrSetupSqRewind
+      IOSQE_IO_LINK == hdrSqeIoLink
+      IORING_ENTER_GETEVENTS == hdrEnterGetevents
+      IORING_FEAT_NO_IOWAIT == hdrFeatNoIowait
+      IORING_CQE_F_32 == hdrCqeF32
 
   test "liburing version":
     check io_uring_major_version() == 2

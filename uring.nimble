@@ -10,7 +10,7 @@ author = "Status Research & Development GmbH"
 description = "Nim wrapper for liburing, the Linux io_uring userspace library"
 license = "MIT or Apache License 2.0"
 
-installFiles = @["uring.nim"]
+installFiles = @["uring.nim", "uring_generated.nim"]
 installDirs = @["vendor", "scripts"]
 skipDirs = @["tests"]
 
@@ -21,7 +21,7 @@ when declared(before):
   before install:
     exec "scripts/build_static_lib.sh"
 
-task staticLib, "Build liburing.a with liburing's own build system and copy it to build/":
+task staticLib, "Build the liburing static libraries with liburing's own build system and copy them to build/":
   exec "scripts/build_static_lib.sh"
 
 task test, "Run the test suite":

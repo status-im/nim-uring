@@ -1,13 +1,21 @@
 # nim-uring
 
-A thin Nim wrapper for [liburing](https://github.com/axboe/liburing), the
+A Nim wrapper for [liburing](https://github.com/axboe/liburing), the
 userspace library for the Linux `io_uring` asynchronous I/O interface.
 
-The wrapper is a single module that binds directly against the liburing
-header, keeping the C names and semantics: functions return negative `errno`
-values on failure, and completion results are read from `IoUringCqe.res`.
-liburing is vendored as a git submodule and built with its own `configure`
-and `make`, then linked statically — no system liburing is required.
+The bindings are generated from the liburing header with
+[Futhark](https://github.com/PMunch/futhark) and cover the complete public
+liburing API, keeping the C names and semantics: functions return negative
+`errno` values on failure, and completion results are read from
+`IoUringCqe.res`. liburing is vendored as a git submodule and built with its
+own `configure` and `make`, then linked statically — no system liburing is
+required. liburing's static-inline helpers are linked through
+`liburing-ffi.a`, which compiles them as real functions for FFI use.
+
+The generated bindings (`uring_generated.nim`) are committed, so building a
+project against this wrapper only needs a C toolchain; the binding generator
+and its dependencies are only needed to regenerate the wrapper after
+updating the vendored liburing (see below).
 
 ## Versioning
 
@@ -33,32 +41,55 @@ Or as a dependency in a `.nimble` file:
 requires "uring"
 ```
 
-When building from a git checkout, fetch the submodule first:
-
-```sh
-git clone --recursive https://github.com/status-im/nim-uring
-```
 
 ## Usage
 
-The `uring` module wraps the core liburing API: queue setup, submission,
-completion handling, resource registration and the common `io_uring_prep_*`
-request preparation helpers. Anything not wrapped can be bound in
-application code against the same header via the exported `uringHeader`
-constant. See [tests/test_uring.nim](tests/test_uring.nim) for working code.
+The `uring` module exposes the full liburing API under its C function names
+(`io_uring_queue_init`, `io_uring_get_sqe`, `io_uring_prep_*`, …). Type
+names are restyled to Nim convention by the binding generator (`struct
+io_uring_sqe` becomes `IoUringSqe`, `struct __kernel_timespec` becomes
+`KernelTimespec`, `sigset_t` becomes `Sigset`, …); see `renameType` in
+[scripts/gen_wrapper.nim](scripts/gen_wrapper.nim) for the policy. Constants
+that the C headers define as function-like macros (`IORING_SETUP_*`, `IOSQE_*`, `IORING_ENTER_*`, `IORING_FEAT_*`,
+`IORING_CQE_F_*`) are maintained by hand in `uring.nim` and cross-checked
+against the header in the test suite. See
+[tests/test_uring.nim](tests/test_uring.nim) for working code.
 
 ## Static library
 
-The vendored liburing is compiled into `vendor/liburing/src/liburing.a`
+The vendored liburing is compiled into `vendor/liburing/src/liburing-ffi.a`
 automatically the first time the wrapper is compiled, and every program using
-this wrapper links it statically. To build the archive explicitly (for use
-outside of Nim, or to prebuild it):
+this wrapper links it statically. To build the archives explicitly (for use
+outside of Nim, or to prebuild them):
 
 ```sh
 nimble staticLib
 ```
 
-This builds the archive and copies it to `build/liburing.a`.
+This builds `liburing.a` and `liburing-ffi.a` and copies them to `build/`.
+
+## Regenerating the wrapper
+
+`uring_generated.nim` is produced from the vendored `liburing.h` and only
+needs regenerating after updating the liburing submodule:
+
+```sh
+scripts/generate_wrapper.sh
+```
+
+Regeneration needs, in addition to Nim:
+
+- `clang` and the libclang development files, used by Futhark to parse the
+  header:
+  - Fedora: `sudo dnf install clang clang-devel`
+  - Debian/Ubuntu: `sudo apt install clang libclang-dev`
+- The [Futhark](https://github.com/PMunch/futhark) nimble package — installed
+  automatically by the script if missing.
+
+A few structs that Futhark mistranslates (anonymous unions, flexible array
+members, forward-declared types) are defined by hand in `uring.nim` and take
+precedence over the generated versions; their layouts are validated against
+the C compiler by the test suite, so run `nimble test` after regenerating.
 
 ## Tests
 

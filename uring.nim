@@ -5,104 +5,56 @@
 #   * Apache v2 license (license terms in the root directory or at https://www.apache.org/licenses/LICENSE-2.0).
 # at your option. This file may not be copied, modified, or distributed except according to those terms.
 
-## Thin Nim wrapper for `liburing <https://github.com/axboe/liburing>`_,
+## Nim wrapper for `liburing <https://github.com/axboe/liburing>`_,
 ## the userspace library for the Linux `io_uring` interface.
 ##
-## The wrapper binds directly against the vendored liburing header, keeping
-## the C names and semantics (functions return negative `errno` values on
-## failure). liburing's static inline helpers are called through the header;
-## everything else links against `liburing.a`, which is built on first
-## compilation using liburing's own `configure` and `make` and linked
-## statically, so there is no runtime dependency on a system liburing.
+## The bindings in `uring_generated.nim` are generated from the vendored
+## `liburing.h` with `Futhark <https://github.com/PMunch/futhark>`_ and cover
+## the complete public liburing API, keeping the C names and semantics
+## (functions return negative `errno` values on failure). liburing's static
+## inline helpers are called through `liburing-ffi.a`, which compiles them as
+## real functions for FFI use. The archive is built on first compilation
+## using liburing's own `configure` and `make` and linked statically, so
+## there is no runtime dependency on a system liburing.
+##
+## To regenerate the bindings after updating the liburing submodule, run
+## `scripts/generate_wrapper.sh` (see the script header for the required
+## tools; regular users of this wrapper don't need them).
 
 when not defined(linux):
   {.error: "io_uring is only available on Linux".}
 
 from std/os import parentDir, quoteShell, `/`, fileExists
-from std/posix import IOVec, Tmsghdr, SockAddr, SockLen, Sigset, Mode
-from std/epoll import EpollEvent
-
-export IOVec, Tmsghdr, SockAddr, SockLen, Sigset, Mode, EpollEvent
 
 const
   uringDir = currentSourcePath.parentDir / "vendor" / "liburing"
-  uringLib = uringDir / "src" / "liburing.a"
+  uringLib = uringDir / "src" / "liburing-ffi.a"
   uringBuildScript = currentSourcePath.parentDir / "scripts" / "build_static_lib.sh"
   uringHeader* = uringDir / "src" / "include" / "liburing.h"
-    ## Path to the vendored `liburing.h`; usable with `importc` to bind
-    ## additional liburing functions in application code.
+    ## Path to the vendored `liburing.h`; usable with `importc` to read
+    ## values through the header in application code. Do this in a module
+    ## that doesn't also call the wrapper functions: including the header in
+    ## a C translation unit that declares the wrapper's extern prototypes
+    ## conflicts with the header's static-inline definitions (see
+    ## `tests/cconsts.nim` for the pattern).
 
 when not fileExists(uringLib):
   # Build the vendored liburing with the same script as `nimble staticLib`;
   # it fetches the submodule if needed and runs liburing's own configure and
   # make. This runs once; later compilations just link the result.
   static:
-    echo "nim-uring: building vendored liburing.a"
+    echo "nim-uring: building vendored liburing-ffi.a"
     let (output, exitCode) = gorgeEx("sh " & quoteShell(uringBuildScript))
     doAssert exitCode == 0, "failed to build vendored liburing:\n" & output
 
 {.passc: "-D_GNU_SOURCE".}
 {.passl: quoteShell(uringLib).}
 
-type
-  KernelTimespec* {.importc: "struct __kernel_timespec",
-      header: uringHeader.} = object
-    tv_sec*: int64
-    tv_nsec*: clonglong
-
-  Statx* {.importc: "struct statx", header: uringHeader.} = object
-
-  IoSqringOffsets* {.importc: "struct io_sqring_offsets",
-      header: uringHeader.} = object
-    head*, tail*, ring_mask*, ring_entries*: uint32
-    flags*, dropped*, array*, resv1*: uint32
-    user_addr*: uint64
-
-  IoCqringOffsets* {.importc: "struct io_cqring_offsets",
-      header: uringHeader.} = object
-    head*, tail*, ring_mask*, ring_entries*: uint32
-    overflow*, cqes*, flags*, resv1*: uint32
-    user_addr*: uint64
-
-  IoUringParams* {.importc: "struct io_uring_params",
-      header: uringHeader.} = object
-    sq_entries*, cq_entries*, flags*: uint32
-    sq_thread_cpu*, sq_thread_idle*: uint32
-    features*, wq_fd*: uint32
-    resv*: array[3, uint32]
-    sq_off*: IoSqringOffsets
-    cq_off*: IoCqringOffsets
-
-  IoUringSqe* {.importc: "struct io_uring_sqe", header: uringHeader.} = object
-    ## Submission queue entry. Only the commonly accessed fields are
-    ## declared; the layout always comes from the C header. Prefer the
-    ## `io_uring_prep_*` functions over writing fields directly.
-    opcode*: uint8
-    flags*: uint8
-    ioprio*: uint16
-    fd*: int32
-    off*: uint64
-    address* {.importc: "addr".}: uint64
-    len*: uint32
-    user_data*: uint64
-    buf_index*: uint16
-    buf_group*: uint16
-
-  IoUringCqe* {.importc: "struct io_uring_cqe", header: uringHeader.} = object
-    ## Completion queue entry. `res` is the syscall result, negative values
-    ## are `-errno`.
-    user_data*: uint64
-    res*: int32
-    flags*: uint32
-
-  IoUring* {.importc: "struct io_uring", header: uringHeader.} = object
-    ## The ring handle. Contains further (undeclared) fields; treat it as
-    ## opaque and let liburing manage it.
-    flags*: cuint
-    ring_fd*: cint
-    features*: cuint
-
 const
+  # The constants below are function-like macros in the C headers
+  # (`(1U << n)`-style), which the binding generator cannot translate; they
+  # are maintained by hand and cross-checked against the header in the tests.
+
   # io_uring_setup() flags
   IORING_SETUP_IOPOLL* = 1'u32 shl 0
   IORING_SETUP_SQPOLL* = 1'u32 shl 1
@@ -178,137 +130,175 @@ const
   LIBURING_UDATA_TIMEOUT* = not 0'u64
     ## `user_data` value of timeout CQEs generated by `io_uring_wait_cqes`.
 
-{.push cdecl, importc, header: uringHeader.}
+type
+  # Hand-maintained definitions for C constructs that Futhark mistranslates:
+  # anonymous unions with members named after Nim keywords get dropped,
+  # flexible array members become phantom pointer fields, and types that
+  # liburing.h only forward-declares come out as empty objects. Declaring a
+  # type here before the include makes the generated bindings use it instead
+  # (each generated declaration is guarded by `when not declared`). The
+  # layouts are cross-checked against the C compiler in the test suite.
 
-# Library version
-proc io_uring_major_version*(): cint
-proc io_uring_minor_version*(): cint
+  IoUringSqeOffUnion* {.union, bycopy.} = object
+    off*: uint64
+    addr2*: uint64
+    cmd_op*: uint32
 
-# Queue setup and teardown
-proc io_uring_queue_init*(entries: cuint; ring: ptr IoUring;
-  flags: cuint): cint
-proc io_uring_queue_init_params*(entries: cuint; ring: ptr IoUring;
-  p: ptr IoUringParams): cint
-proc io_uring_queue_exit*(ring: ptr IoUring)
-proc io_uring_ring_dontfork*(ring: ptr IoUring): cint
+  IoUringSqeSockopt* {.bycopy.} = object
+    level*: uint32
+    optname*: uint32
 
-# Submission queue entries
-proc io_uring_get_sqe*(ring: ptr IoUring): ptr IoUringSqe
-proc io_uring_sqe_set_data*(sqe: ptr IoUringSqe; data: pointer)
-proc io_uring_sqe_set_data64*(sqe: ptr IoUringSqe; data: uint64)
-proc io_uring_sqe_set_flags*(sqe: ptr IoUringSqe; flags: cuint)
-proc io_uring_sqe_set_buf_group*(sqe: ptr IoUringSqe; bgid: cint)
+  IoUringSqeAddrUnion* {.union, bycopy.} = object
+    address*: uint64 ## `addr` in C
+    splice_off_in*: uint64
+    sockopt*: IoUringSqeSockopt
 
-# Submission
-proc io_uring_submit*(ring: ptr IoUring): cint
-proc io_uring_submit_and_wait*(ring: ptr IoUring; wait_nr: cuint): cint
-proc io_uring_submit_and_wait_timeout*(ring: ptr IoUring;
-  cqe_ptr: ptr ptr IoUringCqe; wait_nr: cuint; ts: ptr KernelTimespec;
-  sigmask: ptr Sigset): cint
+  IoUringSqeOpFlagsUnion* {.union, bycopy.} = object
+    rw_flags*: int32
+    fsync_flags*: uint32
+    poll_events*: uint16
+    poll32_events*: uint32
+    sync_range_flags*: uint32
+    msg_flags*: uint32
+    timeout_flags*: uint32
+    accept_flags*: uint32
+    cancel_flags*: uint32
+    open_flags*: uint32
+    statx_flags*: uint32
+    fadvise_advice*: uint32
+    splice_flags*: uint32
+    rename_flags*: uint32
+    unlink_flags*: uint32
+    hardlink_flags*: uint32
+    xattr_flags*: uint32
+    msg_ring_flags*: uint32
+    uring_cmd_flags*: uint32
+    waitid_flags*: uint32
+    futex_flags*: uint32
+    install_fd_flags*: uint32
+    nop_flags*: uint32
+    pipe_flags*: uint32
 
-# Completions
-proc io_uring_wait_cqe*(ring: ptr IoUring; cqe_ptr: ptr ptr IoUringCqe): cint
-proc io_uring_wait_cqe_nr*(ring: ptr IoUring; cqe_ptr: ptr ptr IoUringCqe;
-  wait_nr: cuint): cint
-proc io_uring_wait_cqe_timeout*(ring: ptr IoUring;
-  cqe_ptr: ptr ptr IoUringCqe; ts: ptr KernelTimespec): cint
-proc io_uring_wait_cqes*(ring: ptr IoUring; cqe_ptr: ptr ptr IoUringCqe;
-  wait_nr: cuint; ts: ptr KernelTimespec; sigmask: ptr Sigset): cint
-proc io_uring_peek_cqe*(ring: ptr IoUring; cqe_ptr: ptr ptr IoUringCqe): cint
-proc io_uring_peek_batch_cqe*(ring: ptr IoUring; cqes: ptr ptr IoUringCqe;
-  count: cuint): cuint
-proc io_uring_cqe_get_data*(cqe: ptr IoUringCqe): pointer
-proc io_uring_cqe_get_data64*(cqe: ptr IoUringCqe): uint64
-proc io_uring_cqe_seen*(ring: ptr IoUring; cqe: ptr IoUringCqe)
-proc io_uring_cq_advance*(ring: ptr IoUring; nr: cuint)
+  IoUringSqeBufUnion* {.union, bycopy.} = object
+    buf_index*: uint16
+    buf_group*: uint16
 
-# Ring state
-proc io_uring_sq_ready*(ring: ptr IoUring): cuint
-proc io_uring_sq_space_left*(ring: ptr IoUring): cuint
-proc io_uring_cq_ready*(ring: ptr IoUring): cuint
-proc io_uring_cq_has_overflow*(ring: ptr IoUring): bool
+  IoUringSqeFileUnion* {.union, bycopy.} = object
+    splice_fd_in*: int32
+    file_index*: uint32
+    zcrx_ifq_idx*: uint32
+    optlen*: uint32
+    addr_len*: uint16
 
-# Resource registration
-proc io_uring_register_buffers*(ring: ptr IoUring; iovecs: ptr IOVec;
-  nr_iovecs: cuint): cint
-proc io_uring_unregister_buffers*(ring: ptr IoUring): cint
-proc io_uring_register_files*(ring: ptr IoUring; files: ptr cint;
-  nr_files: cuint): cint
-proc io_uring_register_files_update*(ring: ptr IoUring; off: cuint;
-  files: ptr cint; nr_files: cuint): cint
-proc io_uring_unregister_files*(ring: ptr IoUring): cint
-proc io_uring_register_eventfd*(ring: ptr IoUring; fd: cint): cint
-proc io_uring_unregister_eventfd*(ring: ptr IoUring): cint
+  IoUringSqeAttr* {.bycopy.} = object
+    attr_ptr*: uint64
+    attr_type_mask*: uint64
 
-# Request preparation
-proc io_uring_prep_rw*(op: cint; sqe: ptr IoUringSqe; fd: cint;
-  address: pointer; len: cuint; offset: uint64)
-proc io_uring_prep_nop*(sqe: ptr IoUringSqe)
-proc io_uring_prep_read*(sqe: ptr IoUringSqe; fd: cint; buf: pointer;
-  nbytes: cuint; offset: uint64)
-proc io_uring_prep_write*(sqe: ptr IoUringSqe; fd: cint; buf: pointer;
-  nbytes: cuint; offset: uint64)
-proc io_uring_prep_readv*(sqe: ptr IoUringSqe; fd: cint; iovecs: ptr IOVec;
-  nr_vecs: cuint; offset: uint64)
-proc io_uring_prep_writev*(sqe: ptr IoUringSqe; fd: cint; iovecs: ptr IOVec;
-  nr_vecs: cuint; offset: uint64)
-proc io_uring_prep_read_fixed*(sqe: ptr IoUringSqe; fd: cint; buf: pointer;
-  nbytes: cuint; offset: uint64; buf_index: cint)
-proc io_uring_prep_write_fixed*(sqe: ptr IoUringSqe; fd: cint; buf: pointer;
-  nbytes: cuint; offset: uint64; buf_index: cint)
-proc io_uring_prep_fsync*(sqe: ptr IoUringSqe; fd: cint; fsync_flags: cuint)
-proc io_uring_prep_openat*(sqe: ptr IoUringSqe; dfd: cint; path: cstring;
-  flags: cint; mode: Mode)
-proc io_uring_prep_close*(sqe: ptr IoUringSqe; fd: cint)
-proc io_uring_prep_statx*(sqe: ptr IoUringSqe; dfd: cint; path: cstring;
-  flags: cint; mask: cuint; statxbuf: ptr Statx)
-proc io_uring_prep_fallocate*(sqe: ptr IoUringSqe; fd: cint; mode: cint;
-  offset: uint64; len: uint64)
-proc io_uring_prep_splice*(sqe: ptr IoUringSqe; fd_in: cint; off_in: int64;
-  fd_out: cint; off_out: int64; nbytes: cuint; splice_flags: cuint)
-proc io_uring_prep_unlinkat*(sqe: ptr IoUringSqe; dfd: cint; path: cstring;
-  flags: cint)
-proc io_uring_prep_renameat*(sqe: ptr IoUringSqe; olddfd: cint;
-  oldpath: cstring; newdfd: cint; newpath: cstring; flags: cuint)
-proc io_uring_prep_timeout*(sqe: ptr IoUringSqe; ts: ptr KernelTimespec;
-  count: cuint; flags: cuint)
-proc io_uring_prep_timeout_remove*(sqe: ptr IoUringSqe; user_data: uint64;
-  flags: cuint)
-proc io_uring_prep_timeout_update*(sqe: ptr IoUringSqe;
-  ts: ptr KernelTimespec; user_data: uint64; flags: cuint)
-proc io_uring_prep_link_timeout*(sqe: ptr IoUringSqe; ts: ptr KernelTimespec;
-  flags: cuint)
-proc io_uring_prep_poll_add*(sqe: ptr IoUringSqe; fd: cint; poll_mask: cuint)
-proc io_uring_prep_poll_multishot*(sqe: ptr IoUringSqe; fd: cint;
-  poll_mask: cuint)
-proc io_uring_prep_poll_remove*(sqe: ptr IoUringSqe; user_data: uint64)
-proc io_uring_prep_cancel*(sqe: ptr IoUringSqe; user_data: pointer;
-  flags: cint)
-proc io_uring_prep_cancel64*(sqe: ptr IoUringSqe; user_data: uint64;
-  flags: cint)
-proc io_uring_prep_accept*(sqe: ptr IoUringSqe; fd: cint;
-  address: ptr SockAddr; addrlen: ptr SockLen; flags: cint)
-proc io_uring_prep_multishot_accept*(sqe: ptr IoUringSqe; fd: cint;
-  address: ptr SockAddr; addrlen: ptr SockLen; flags: cint)
-proc io_uring_prep_connect*(sqe: ptr IoUringSqe; fd: cint;
-  address: ptr SockAddr; addrlen: SockLen)
-proc io_uring_prep_socket*(sqe: ptr IoUringSqe; domain: cint; kind: cint;
-  protocol: cint; flags: cuint)
-proc io_uring_prep_shutdown*(sqe: ptr IoUringSqe; fd: cint; how: cint)
-proc io_uring_prep_send*(sqe: ptr IoUringSqe; sockfd: cint; buf: pointer;
-  len: csize_t; flags: cint)
-proc io_uring_prep_recv*(sqe: ptr IoUringSqe; sockfd: cint; buf: pointer;
-  len: csize_t; flags: cint)
-proc io_uring_prep_sendmsg*(sqe: ptr IoUringSqe; fd: cint; msg: ptr Tmsghdr;
-  flags: cuint)
-proc io_uring_prep_recvmsg*(sqe: ptr IoUringSqe; fd: cint; msg: ptr Tmsghdr;
-  flags: cuint)
-proc io_uring_prep_provide_buffers*(sqe: ptr IoUringSqe; address: pointer;
-  len: cint; nr: cint; bgid: cint; bid: cint)
-proc io_uring_prep_remove_buffers*(sqe: ptr IoUringSqe; nr: cint; bgid: cint)
-proc io_uring_prep_files_update*(sqe: ptr IoUringSqe; fds: ptr cint;
-  nr_fds: cuint; offset: cint)
-proc io_uring_prep_epoll_ctl*(sqe: ptr IoUringSqe; epfd: cint; fd: cint;
-  op: cint; ev: ptr EpollEvent)
+  IoUringSqeCmdUnion* {.union, bycopy.} = object
+    addr3*: uint64
+    attr*: IoUringSqeAttr
+    optval*: uint64
+    ## With `IORING_SETUP_SQE128`, arbitrary command data (`sqe->cmd`)
+    ## starts at this union's offset.
 
-{.pop.}
+  IoUringSqe* {.bycopy.} = object
+    ## Submission queue entry, laid out as in `liburing/io_uring.h`. The
+    ## anonymous C unions are named here; prefer the `io_uring_prep_*`
+    ## functions over writing fields directly.
+    opcode*: uint8
+    flags*: uint8
+    ioprio*: uint16
+    fd*: int32
+    off_u*: IoUringSqeOffUnion
+    addr_u*: IoUringSqeAddrUnion
+    len*: uint32
+    opflags_u*: IoUringSqeOpFlagsUnion
+    user_data*: uint64
+    buf_u*: IoUringSqeBufUnion
+    personality*: uint16
+    file_u*: IoUringSqeFileUnion
+    cmd_u*: IoUringSqeCmdUnion
+
+  IoUringCqe* {.bycopy.} = object
+    ## Completion queue entry. `res` is the syscall result, negative values
+    ## are `-errno`. With `IORING_SETUP_CQE32`, 16 extra bytes of completion
+    ## data follow each entry; see `big_cqe`.
+    user_data*: uint64
+    res*: int32
+    flags*: uint32
+
+  IoUringProbe* {.bycopy.} = object
+    ## Probe header; `ops_len` entries follow in memory, see `ops`.
+    last_op*: uint8
+    ops_len*: uint8
+    resv: uint16
+    resv2: array[3, uint32]
+
+  Cmsghdr* {.bycopy.} = object
+    cmsg_len*: csize_t
+    cmsg_level*: int32
+    cmsg_type*: int32
+
+  EpollEvent* {.bycopy, packed.} = object
+    # The kernel packs epoll_event on x86_64; on other Linux targets the
+    # layout is identical with or without packing (u32 + padding-free u64
+    # data union), so packing unconditionally matches the C layout.
+    events*: uint32
+    data*: uint64
+
+  FutexWaitv* {.bycopy.} = object
+    val*: uint64
+    uaddr*: uint64
+    flags*: uint32
+    reserved: uint32
+
+  StatxTimestamp* {.bycopy.} = object
+    tv_sec*: int64
+    tv_nsec*: uint32
+    reserved: int32
+
+  Statx* {.bycopy.} = object
+    stx_mask*: uint32
+    stx_blksize*: uint32
+    stx_attributes*: uint64
+    stx_nlink*: uint32
+    stx_uid*: uint32
+    stx_gid*: uint32
+    stx_mode*: uint16
+    spare0: array[1, uint16]
+    stx_ino*: uint64
+    stx_size*: uint64
+    stx_blocks*: uint64
+    stx_attributes_mask*: uint64
+    stx_atime*: StatxTimestamp
+    stx_btime*: StatxTimestamp
+    stx_ctime*: StatxTimestamp
+    stx_mtime*: StatxTimestamp
+    stx_rdev_major*: uint32
+    stx_rdev_minor*: uint32
+    stx_dev_major*: uint32
+    stx_dev_minor*: uint32
+    stx_mnt_id*: uint64
+    stx_dio_mem_align*: uint32
+    stx_dio_offset_align*: uint32
+    stx_subvol*: uint64
+    stx_atomic_write_unit_min*: uint32
+    stx_atomic_write_unit_max*: uint32
+    stx_atomic_write_segments_max*: uint32
+    stx_dio_read_offset_align*: uint32
+    stx_atomic_write_unit_max_opt*: uint32
+    spare2: array[1, uint32]
+    spare3: array[8, uint64]
+
+include uring_generated
+
+func big_cqe*(cqe: ptr IoUringCqe): ptr UncheckedArray[uint64] =
+  ## The extra completion data following the CQE on rings set up with
+  ## `IORING_SETUP_CQE32` (`cqe->big_cqe[]` in C).
+  cast[ptr UncheckedArray[uint64]](cast[uint](cqe) + uint(sizeof(IoUringCqe)))
+
+func ops*(probe: ptr IoUringProbe): ptr UncheckedArray[IoUringProbeOp] =
+  ## The `ops_len` probe entries following the probe header
+  ## (`probe->ops[]` in C).
+  cast[ptr UncheckedArray[IoUringProbeOp]](
+    cast[uint](probe) + uint(sizeof(IoUringProbe)))
